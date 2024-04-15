@@ -10,7 +10,7 @@ import torchvision.transforms as transforms
 import torchvision.transforms.functional as TF
 from pathlib import Path
 from torch import optim
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, random_split, ConcatDataset
 from tqdm import tqdm
 
 import wandb
@@ -19,8 +19,16 @@ from unet import UNet
 from utils.data_loading import BasicDataset, CarvanaDataset
 from utils.dice_score import dice_loss
 
-dir_img = Path("/home/xinyue/thesis/Pytorch-UNet-master/data/patches/merge/data/")
-dir_mask = Path('/home/xinyue/thesis/Pytorch-UNet-master/data/patches/merge/label/')
+# random_split = True
+# dir_img = Path("/home/xinyue/thesis/Pytorch-UNet-master/data/patches/merge/data/")
+# dir_mask = Path('/home/xinyue/thesis/Pytorch-UNet-master/data/patches/merge/label/')
+
+random_split = False
+train_dir_img = Path("/home/xinyue/thesis/Pytorch-UNet-master/data/patches/train/data/")
+train_dir_mask = Path("/home/xinyue/thesis/Pytorch-UNet-master/data/patches/train/label/")
+val_dir_img = Path("/home/xinyue/thesis/Pytorch-UNet-master/data/patches/validation/data/")
+val_dir_mask = Path("/home/xinyue/thesis/Pytorch-UNet-master/data/patches/validation/label/")
+
 dir_checkpoint = Path('./checkpoints/')
 
 
@@ -47,16 +55,33 @@ def train_model(
     # Initialisation of the number of consecutive epochs without improvement
     no_improvement_count = 0
     
-    # 1. Create dataset
+    #########################################################
+    # Given the training set and validation set respectively
+    #########################################################
+    # # 1. Create dataset
     try:
-        dataset = CarvanaDataset(dir_img, dir_mask, img_scale)
+         train_set = CarvanaDataset(train_dir_img, train_dir_mask, img_scale)
+         val_set = CarvanaDataset(val_dir_img, val_dir_mask, img_scale)
     except (AssertionError, RuntimeError, IndexError):
-        dataset = BasicDataset(dir_img, dir_mask, img_scale)
+         train_set = BasicDataset(train_dir_img, train_dir_mask, img_scale)
+         val_set = BasicDataset(val_dir_img, val_dir_mask, img_scale)
+    
+    n_train = int(len(train_set))
+    n_val = int(len(val_set))
+    dataset = ConcatDataset([train_set, val_set])
+    ####################################################
+    # Random assignment of training and validation sets
+    ####################################################
+    # # 1. Create dataset
+    # try:
+    #     dataset = CarvanaDataset(dir_img, dir_mask, img_scale)
+    # except (AssertionError, RuntimeError, IndexError):
+    #     dataset = BasicDataset(dir_img, dir_mask, img_scale)
 
-    # 2. Split into train / validation partitions
-    n_val = int(len(dataset) * val_percent)
-    n_train = len(dataset) - n_val
-    train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
+    # # 2. Split into train / validation partitions
+    # n_val = int(len(dataset) * val_percent)
+    # n_train = len(dataset) - n_val
+    # train_set, val_set = random_split(dataset, [n_train, n_val], generator=torch.Generator().manual_seed(0))
 
     # 3. Create data loaders
     loader_args = dict(batch_size=batch_size, num_workers=0, pin_memory=True)
@@ -172,7 +197,7 @@ def train_model(
             for i in range(model.n_classes):
                 intersection = ((masks_pred.argmax(dim=1) == i) & (true_masks == i)).sum().float()
                 union = ((masks_pred.argmax(dim=1) == i) | (true_masks == i)).sum().float()
-                iou = (intersection + 1e-10) / (union + 1e-10)  # 添加平滑项以防止除零错误
+                iou = (intersection + 1e-10) / (union + 1e-10)  # Add a smoothing term to prevent divide-by-zero errors
                 iou_per_class[i] = iou
 
             # the average IOU for each category
@@ -187,7 +212,13 @@ def train_model(
             if save_checkpoint:
                 Path(dir_checkpoint).mkdir(parents=True, exist_ok=True)
                 state_dict = model.state_dict()
-                state_dict['mask_values'] = dataset.mask_values
+                if random_split == True:
+                    state_dict['mask_values'] = dataset.mask_values
+                else:
+                    try:
+                        state_dict['mask_values'] = train_set.mask_values
+                    except (AttributeError):
+                        state_dict['mask_values'] = val_set.mask_values
                 torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
                 logging.info(f'Checkpoint {epoch} saved!')
         else:

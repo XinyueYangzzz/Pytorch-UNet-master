@@ -2,11 +2,16 @@
 # Description based on the thesis
 ######################################
 ## training part
+run train.py
 1. Make sure the data path is correct
+2. Parameterisation：
+  random_split = True ---> Random assignment of training and validation sets
+  random_split = False ---> Given a defined training set and validation set respectively
 
 ## prediction part
-1. add the MIOU evaluation part
-2. update the training result model before prediction
+run predict_with_eval.py
+1. Add the MIOU evaluation part
+2. Update the training result model before prediction
 
 
 ##########################################
