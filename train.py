@@ -29,7 +29,7 @@ def train_model(
         device,
         epochs: int = 6,
         batch_size: int = 4,
-        learning_rate: float = 1e-3,
+        learning_rate: float = 1e-3,  # Initial learning rate
         val_percent: float = 0.1,
         save_checkpoint: bool = True,
         img_scale: float = 0.5,
@@ -37,16 +37,14 @@ def train_model(
         weight_decay: float = 1e-8,
         momentum: float = 0.999,
         gradient_clipping: float = 1.0,
-        lr_decay_factor: float = 0.05,  # 学习率衰减因子
-        patience: int = 3  # 没有改善的连续 epochs 数
+        lr_decay_factor: float = 0.05,  # Learning rate decay factor
+        patience: int = 3  # Number of consecutive epochs without improvement
 ):
-    # 初始学习率
-    learning_rate = learning_rate
 
-    # 最佳验证损失
+    # Best Verification Loss
     best_val_loss = float('inf')
 
-    # 连续 epochs 没有改善的次数
+    # Initialisation of the number of consecutive epochs without improvement
     no_improvement_count = 0
     
     # 1. Create dataset
@@ -177,7 +175,7 @@ def train_model(
                 iou = (intersection + 1e-10) / (union + 1e-10)  # 添加平滑项以防止除零错误
                 iou_per_class[i] = iou
 
-            # 计算每个类别的平均 IOU
+            # the average IOU for each category
             mean_iou = iou_per_class.mean()
 
         # val_loss
@@ -193,16 +191,16 @@ def train_model(
                 torch.save(state_dict, str(dir_checkpoint / 'checkpoint_epoch{}.pth'.format(epoch)))
                 logging.info(f'Checkpoint {epoch} saved!')
         else:
-            # 如果验证损失没有改善，则增加没有改善的计数器
+            # If there is no improvement in verification loss, increase the counter for no improvement
             no_improvement_count += 1
 
-            # 如果连续 epochs 没有改善，则减小学习率
+            # If successive epochs do not improve, reduce the learning rate
             if no_improvement_count >= patience:
                 learning_rate *= lr_decay_factor
                 optimizer.param_groups[0]['lr'] = learning_rate
                 logging.info(f'Learning rate decreased to {learning_rate}')
 
-                # 重置没有改善的计数器
+                # Reset counters that have not improved
                 no_improvement_count = 0
 
 
