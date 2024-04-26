@@ -10,6 +10,8 @@ from os import listdir
 from os.path import splitext, isfile, join
 from pathlib import Path
 from torch.utils.data import Dataset
+from torchvision.transforms.functional import to_pil_image
+
 from tqdm import tqdm
 
 
@@ -33,20 +35,37 @@ def unique_mask_values(idx, mask_dir, mask_suffix):
         return np.unique(mask, axis=0)
     else:
         raise ValueError(f'Loaded masks should have 2 or 3 dimensions, found {mask.ndim}')
+    
+def flatten(array):
+    if isinstance(array, np.ndarray):
+        return [item for subarray in array for item in flatten(subarray)]
+    else:
+        return [array]
+
+def check_pixel_values(img):
+    img_tensor = torch.tensor(img)
+    img_np = img_tensor.detach().cpu().numpy()
+    merged_array = flatten(img_np)
+    unique_pixel_values = list(set(merged_array))
+
+    return unique_pixel_values
 
 
 class BasicDataset(Dataset):
-    def __init__(self, images_dir: str, mask_dir: str, scale: float = 1.0, mask_suffix: str = ''):
+    def __init__(self, images_dir: str, mask_dir: str, scale: float = 1.0, mask_suffix: str = '', transform = None):
         self.images_dir = Path(images_dir)
         self.mask_dir = Path(mask_dir)
         assert 0 < scale <= 1, 'Scale must be between 0 and 1'
         self.scale = scale
         self.mask_suffix = mask_suffix
+        self.transform = transform
 
         self.ids = [splitext(file)[0] for file in listdir(images_dir) if isfile(join(images_dir, file)) and not file.startswith('.')]
         if not self.ids:
             raise RuntimeError(f'No input file found in {images_dir}, make sure you put your images there')
 
+        # partial()fixes some arguments and creates a new function
+        # p.imap()implements the iteration function, passing in self.ids in turn to the newly created function
         logging.info(f'Creating dataset with {len(self.ids)} examples')
         logging.info('Scanning mask files to determine unique values')
         with Pool() as p:
@@ -103,9 +122,18 @@ class BasicDataset(Dataset):
         assert img.size == mask.size, \
             f'Image and mask {name} should be the same size, but are {img.size} and {mask.size}'
 
+
         img = self.preprocess(self.mask_values, img, self.scale, is_mask=False)
         mask = self.preprocess(self.mask_values, mask, self.scale, is_mask=True)
+        
+        # img = img * (mask > 0)
 
+        if self.transform:
+            img_tensor = torch.tensor(img)
+            img_PIL = to_pil_image(img_tensor)
+            img_transformed = self.transform(img_PIL)
+            img = np.array(img_transformed).transpose((2, 0, 1))
+            
         return {
             'image': torch.as_tensor(img.copy()).float().contiguous(),
             'mask': torch.as_tensor(mask.copy()).long().contiguous()
@@ -113,5 +141,5 @@ class BasicDataset(Dataset):
 
 
 class CarvanaDataset(BasicDataset):
-    def __init__(self, images_dir, mask_dir, scale=1):
-        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask')
+    def __init__(self, images_dir, mask_dir, scale=1, transform = None):
+        super().__init__(images_dir, mask_dir, scale, mask_suffix='_mask', transform = None)

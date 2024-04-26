@@ -8,11 +8,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from torchvision import transforms
 
 from utils.data_loading import BasicDataset
 from unet import UNet
 from utils.utils import plot_img_and_mask
+from evaluate import flatten_tensor
 
 def predict_img(net,
                 full_img,
@@ -35,25 +35,6 @@ def predict_img(net,
     return mask[0].long().squeeze().numpy()
 
 
-def get_args():
-    parser = argparse.ArgumentParser(description='Predict masks from input images',
-                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--model', '-m', default='/home/xinyue/thesis/Pytorch-UNet-master/checkpoints/checkpoint_epoch5.pth', metavar='FILE',
-                        help='Specify the file in which the model is stored')
-    parser.add_argument('--input', '-i', default= "/home/xinyue/thesis/Pytorch-UNet-master/data/patches/test/data/" ,metavar='INPUT', help='Filenames of input images')
-    parser.add_argument('--output', '-o', metavar='OUTPUT', nargs='+', help='Filenames of output images')
-    parser.add_argument('--viz', '-v', action='store_true',
-                        help='Visualize the images as they are processed')
-    parser.add_argument('--no-save', '-n', action='store_true', help='Do not save the output masks')
-    parser.add_argument('--mask-threshold', '-t', type=float, default=0.5,
-                        help='Minimum probability value to consider a mask pixel white')
-    parser.add_argument('--scale', '-s', type=float, default=0.5,
-                        help='Scale factor for the input images')
-    parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
-    parser.add_argument('--classes', '-c', type=int, default=7, help='Number of classes')
-    
-    return parser.parse_args()
-
 
 def get_output_filenames(args):
     in_files = glob.glob(os.path.join(args.input, '*.tif'))
@@ -63,7 +44,7 @@ def get_output_filenames(args):
         for f in in_files:
             basename = os.path.basename(f)
             dirname = os.path.split(os.path.split(f)[0])[0]
-            out_files.append(os.path.join(dirname, 'result', f'{os.path.splitext(basename)[0]}_OUT.tif'))
+            out_files.append(os.path.join(dirname, 'result', f'{os.path.splitext(basename)[0]}.tif'))
     elif len(in_files) != len(args.output):
         logging.error("Input files and output files are not of the same length")
         raise SystemExit()
@@ -106,27 +87,67 @@ def compute_tp_fp_fn(predicted_mask, true_mask, class_id):
     
     return tp, fp, fn
 
+def intersectionAndUnion_array(imPred, imLab, numClass):
+    intersection_classes = [0] * numClass
+    union_classes = [0] * numClass
+    
+    # Compute area intersection:
+    for class_idx in range(0, numClass):
+        intersection_per_class = np.sum((imPred == class_idx) & (imLab == class_idx))
+        union_per_class = np.sum(imPred == class_idx) + np.sum(imLab == class_idx) - intersection_per_class
+        intersection_classes[class_idx] += intersection_per_class
+        union_classes[class_idx] += union_per_class
+    
+    intersection_classes = np.array(intersection_classes)    
+    union_classes = np.array(union_classes)
+    
+    return intersection_classes, union_classes
 
+def get_args():
+    parser = argparse.ArgumentParser(description='Predict masks from input images',
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--model', '-m', default='/home/xinyue/thesis/Pytorch-UNet-master/checkpoints/checkpoint_epoch.pth', metavar='FILE',
+                        help='Specify the file in which the model is stored')
+    parser.add_argument('--input', '-i', default= "/home/xinyue/thesis/Pytorch-UNet-master/data/patches/test/data/" ,metavar='INPUT', help='Filenames of input images')
+    parser.add_argument('--output', '-o', metavar='OUTPUT', nargs='+', help='Filenames of output images')
+    parser.add_argument('--viz', '-v', action='store_true',
+                        help='Visualize the images as they are processed')
+    parser.add_argument('--no-save', '-n', action='store_true', help='Do not save the output masks')
+    parser.add_argument('--mask-threshold', '-t', type=float, default=0.5,
+                        help='Minimum probability value to consider a mask pixel white')
+    parser.add_argument('--scale', '-s', type=float, default=0.5,
+                        help='Scale factor for the input images')
+    parser.add_argument('--bilinear', action='store_true', default=False, help='Use bilinear upsampling')
+    parser.add_argument('--classes', '-c', type=int, default=7, help='Number of classes')
+    
+    return parser.parse_args()
+
+
+
+# there are two method to calculate the IoU, the results are same
+# one is using tp, fp, fn, another is to calculate intersection and union directly
 if __name__ == '__main__':
     args = get_args()
     logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
     
+    # define the output direction path
     output_dir = os.path.join(os.path.dirname(args.input), 'result')
     os.makedirs(output_dir, exist_ok=True)
-    
-    true_masks_dir = os.path.join(os.path.dirname(os.path.dirname(args.input)), 'label')
-    
-    #in_files = args.input
-    in_files = glob.glob(os.path.join(args.input, '*.tif'))
     out_files = get_output_filenames(args)
     
+    # define the input dataset
+    true_masks_dir = os.path.join(os.path.dirname(os.path.dirname(args.input)), 'label')
+    in_files = glob.glob(os.path.join(args.input, '*.tif'))
+
     # Initialize lists to store IoU values for each image
     iou_per_image = []
+    intersection_images = [0] * args.classes
+    union_images = [0] * args.classes
     
     # Initialize lists to store TP, FP, FN for each class
-    tp_per_class = np.zeros(args.classes)
-    fp_per_class = np.zeros(args.classes)
-    fn_per_class = np.zeros(args.classes)
+    # tp_per_class = np.zeros(args.classes)
+    # fp_per_class = np.zeros(args.classes)
+    # fn_per_class = np.zeros(args.classes)
 
     net = UNet(n_channels=3, n_classes=args.classes, bilinear=args.bilinear)
 
@@ -153,22 +174,34 @@ if __name__ == '__main__':
                            device=device)
         
         true_mask = np.array(Image.open(true_mask_file))
+        
+        predicted_mask = mask * (true_mask > 0)
+        
+        # for debugging
+        # flatten_mask = predicted_mask.flatten()
+        # flatten_mask_values = list(set(flatten_mask))
+        # flatten_true = true_mask.flatten()
+        # flatten_true_values = list(set(flatten_true))
+        
+        intersection_classes, union_classes = intersectionAndUnion_array(predicted_mask, true_mask, args.classes)
+        intersection_images += intersection_classes
+        union_images += union_classes
 
         # Compute TP, FP, FN for each class
-        for class_id in range(args.classes):
-            tp, fp, fn = compute_tp_fp_fn(mask, true_mask, class_id)
-            tp_per_class[class_id] += tp
-            fp_per_class[class_id] += fp
-            fn_per_class[class_id] += fn
+        # for class_id in range(args.classes):
+        #     tp, fp, fn = compute_tp_fp_fn(mask, true_mask, class_id)
+        #     tp_per_class[class_id] += tp
+        #     fp_per_class[class_id] += fp
+        #     fn_per_class[class_id] += fn
         
-        # Compute IoU for the current image
-        iou = compute_iou_per_class(mask, true_mask, args.classes)
-        iou_per_image.append(iou)
+        # # Compute IoU for the current image
+        # iou = compute_iou_per_class(mask, true_mask, args.classes)
+        # iou_per_image.append(iou)
 
         if not args.no_save:
             out_filename = out_files[i]
             os.makedirs(os.path.dirname(out_filename), exist_ok=True)
-            result = mask_to_image(mask, mask_values)
+            result = mask_to_image(predicted_mask, mask_values)
             result.save(out_filename)
             logging.info(f'Mask saved to {out_filename}')
 
@@ -176,18 +209,19 @@ if __name__ == '__main__':
             logging.info(f'Visualizing results for image {filename}, close to continue...')
             plot_img_and_mask(img, mask)
     
-    # Compute mean IoU per class
-    miou_per_class = np.mean(iou_per_image, axis=0)
     
-    # Compute IoU per class
-    iou_per_class = np.zeros(args.classes)
-    for class_id in range(args.classes):
-        iou_per_class[class_id] = tp_per_class[class_id] / (tp_per_class[class_id] + fp_per_class[class_id] + fn_per_class[class_id])
+    
+    # # Compute mean IoU per class
+    # miou_img_per_class = np.mean(iou_per_image, axis=0)
+    
+    # # Compute IoU per class
+    # iou_per_class = np.zeros(args.classes)
+    # for class_id in range(args.classes):
+    #     iou_per_class[class_id] = tp_per_class[class_id] / (tp_per_class[class_id] + fp_per_class[class_id] + fn_per_class[class_id])
 
-    miou = np.mean(miou_per_class)
+    IoU_per_class = intersection_images / (union_images + 1e-10)
+    miou = np.mean(IoU_per_class)
     
-    logging.info(f'Mean IoU per class: {miou_per_class}')
+    logging.info(f'Mean IoU per class: {IoU_per_class}')
     #pdb.set_trace()
-    logging.info(f'Mean IoU across all classes: {miou}')
-    
-#python predict_with_eval.py --model "/home/xinyue/thesis/Pytorch-UNet-master/checkpoints/checkpoint_epoch11.pth" --input "/home/xinyue/thesis/Pytorch-UNet-master/data/patches/test/data/"
+    logging.info(f'Mean IoU: {miou}')
